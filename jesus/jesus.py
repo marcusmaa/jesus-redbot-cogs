@@ -51,7 +51,7 @@ class Jesus(commands.Cog):
 
         try:
             video_path = await self.download_video(url)
-            share_url = await self.upload_to_loops(video_path, url)
+            share_url = await self.upload_to_loops(video_path, url, message.id)
 
             # Sending the canonical URL makes Discord render Loops' video embed.
             await message.channel.send(share_url)
@@ -122,7 +122,7 @@ class Jesus(commands.Cog):
 
         return video_path
 
-    async def upload_to_loops(self, video_path, source_url):
+    async def upload_to_loops(self, video_path, source_url, source_message_id):
         loops_url = os.getenv("LOOPS_URL", "").rstrip("/")
         access_token = os.getenv("LOOPS_ACCESS_TOKEN", "").strip()
 
@@ -138,7 +138,8 @@ class Jesus(commands.Cog):
             else f"{loops_url}/api/v1"
         )
         upload_url = f"{api_base}/studio/upload"
-        description = f"Archived from Discord: {source_url}"[:200]
+        upload_marker = f"[Discord:{source_message_id}]"
+        description = f"{upload_marker} {source_url}"[:200]
 
         form = aiohttp.FormData()
 
@@ -166,21 +167,57 @@ class Jesus(commands.Cog):
                             f"Loops upload failed ({response.status}): {details}"
                         )
 
-                    payload = await response.json(content_type=None)
-                    data = payload.get("data")
+                    await response.read()
 
-                    if isinstance(data, list):
-                        video = data[0] if data else None
-                    else:
-                        video = data
+                return await self.wait_for_loops_share_url(
+                    session,
+                    api_base,
+                    headers,
+                    upload_marker,
+                )
 
-                    share_url = video.get("url") if isinstance(video, dict) else None
+    async def wait_for_loops_share_url(
+        self,
+        session,
+        api_base,
+        headers,
+        upload_marker,
+    ):
+        posts_url = (
+            f"{api_base}/studio/posts"
+            "?limit=20&sort_field=created_at&sort_direction=desc"
+        )
 
-                    if not isinstance(share_url, str) or not share_url.startswith(
-                        ("https://", "http://")
-                    ):
-                        raise RuntimeError(
-                            "Loops upload response did not include a share URL"
-                        )
+        # Loops processes uploads asynchronously, so wait for this exact post to
+        # become published and expose its canonical share URL.
+        for _ in range(60):
+            async with session.get(posts_url, headers=headers) as response:
+                if not 200 <= response.status < 300:
+                    details = (await response.text())[:500]
+                    raise RuntimeError(
+                        f"Loops post lookup failed ({response.status}): {details}"
+                    )
 
+                payload = await response.json(content_type=None)
+
+            for video in payload.get("data", []):
+                if not isinstance(video, dict):
+                    continue
+
+                if upload_marker not in (video.get("caption") or ""):
+                    continue
+
+                share_url = video.get("url")
+
+                if (
+                    video.get("status") == "published"
+                    and isinstance(share_url, str)
+                    and share_url.startswith(("https://", "http://"))
+                ):
                     return share_url
+
+            await asyncio.sleep(5)
+
+        raise RuntimeError(
+            "Loops did not publish the uploaded video within five minutes"
+        )
