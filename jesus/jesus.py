@@ -8,9 +8,9 @@ from redbot.core import commands
 
 CHANNEL_ID = 1541786916817739916
 
-HOURGLASS = "\N{HOURGLASS NOT DONE}"
-SUCCESS = "\N{WHITE HEAVY CHECK MARK}"
-FAILED = "\N{CROSS MARK}"
+HOURGLASS = "\u23F3"
+SUCCESS = "\u2705"
+FAILED = "\u274C"
 
 SUPPORTED_URL = re.compile(
     r"https?://(?:www\.)?"
