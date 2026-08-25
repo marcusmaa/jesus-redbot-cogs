@@ -37,7 +37,7 @@ class Jesus(commands.Cog):
 
         url = match.group(0)
 
-        await message.add_reaction("?")
+        await message.add_reaction("⏳")
 
         try:
             video_path = await self.download_video(url)
@@ -45,13 +45,13 @@ class Jesus(commands.Cog):
             print(f"Downloaded: {video_path}")
 
             await message.remove_reaction("?", self.bot.user)
-            await message.add_reaction("?")
+            await message.add_reaction("✅")
 
         except Exception as e:
             print(f"Download failed: {e}")
 
             await message.remove_reaction("?", self.bot.user)
-            await message.add_reaction("?")
+            await message.add_reaction("❌")
 
     async def download_video(self, url):
         download_dir = tempfile.mkdtemp(prefix="jesus_")
