@@ -71,6 +71,11 @@ class Jesus(commands.Cog):
                 shutil.rmtree(os.path.dirname(video_path), ignore_errors=True)
 
     async def download_video(self, url):
+        yt_dlp = shutil.which("yt-dlp")
+
+        if not yt_dlp:
+            raise RuntimeError("yt-dlp is not installed or is not on PATH")
+
         download_dir = tempfile.mkdtemp(prefix="jesus_")
 
         output = os.path.join(
@@ -79,7 +84,7 @@ class Jesus(commands.Cog):
         )
 
         process = await asyncio.create_subprocess_exec(
-            "/data/venv/bin/yt-dlp",
+            yt_dlp,
             "--no-playlist",
             "--format",
             "bv*+ba/b",
