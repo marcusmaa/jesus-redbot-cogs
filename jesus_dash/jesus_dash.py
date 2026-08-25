@@ -1,8 +1,6 @@
 import asyncio
-import importlib
 import logging
 import os
-from importlib.util import find_spec
 
 from discord.ext import tasks
 from redbot.core import Config, commands
@@ -128,15 +126,32 @@ class JesusDash(commands.Cog):
 
         emoji = str(payload.emoji)
 
-        if emoji == RELOAD:
-            reloaded, failed = await self.reload_all_cogs()
-            await self.set_status(
-                f"Reloaded {reloaded} cog(s); {failed} failed."
-            )
-        elif emoji == UPDATE:
-            await self.update_all_cogs()
-        elif emoji == REFRESH:
-            await self.set_status("Dashboard refreshed.")
+        try:
+            if emoji == RELOAD:
+                reloaded, failed = await self.reload_all_cogs()
+                await self.set_status(
+                    f"Reloaded {reloaded} cog(s); {failed} failed."
+                )
+            elif emoji == UPDATE:
+                await self.update_all_cogs()
+            elif emoji == REFRESH:
+                await self.set_status("Dashboard refreshed.")
+        finally:
+            await self.remove_owner_reaction(payload)
+
+    async def remove_owner_reaction(self, payload):
+        member = payload.member
+
+        if member is None:
+            return
+
+        channel = await self.get_dashboard_channel()
+        message = await channel.fetch_message(await self.config.message_id())
+
+        try:
+            await message.remove_reaction(payload.emoji, member)
+        except Exception:
+            log.debug("Could not remove dashboard reaction", exc_info=True)
 
     async def reload_all_cogs(self):
         extensions = self.managed_extensions()
@@ -149,11 +164,11 @@ class JesusDash(commands.Cog):
         for extension in extensions:
             try:
                 self.bot.unload_extension(extension)
-                importlib.invalidate_caches()
-                spec = find_spec(extension)
+                self.bot._cog_mgr.invalidate_caches()
+                spec = await self.bot._cog_mgr.find_cog(extension)
 
                 if spec is None:
-                    raise RuntimeError("module specification was not found")
+                    raise RuntimeError("CogManager could not find this cog")
 
                 await self.bot.load_extension(spec)
                 reloaded += 1
