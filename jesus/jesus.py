@@ -1,8 +1,10 @@
 import asyncio
 import os
 import re
+import shutil
 import tempfile
 
+import aiohttp
 from redbot.core import commands
 
 
@@ -40,26 +42,30 @@ class Jesus(commands.Cog):
             return
 
         url = match.group(0)
+        video_path = None
 
         await message.add_reaction(HOURGLASS)
 
         try:
             video_path = await self.download_video(url)
+            await self.upload_to_loops(video_path, url)
 
-            print(f"Downloaded: {video_path}")
-
-            await message.remove_reaction(HOURGLASS, self.bot.user)
-            await message.add_reaction(SUCCESS)
+            # Do not delete the source message until Loops confirms the upload.
+            await message.delete()
+            print(f"Uploaded to Loops and deleted source message: {url}")
 
         except Exception as e:
-            print(f"Download failed: {e}")
+            print(f"Video archive failed: {e}")
 
             try:
                 await message.remove_reaction(HOURGLASS, self.bot.user)
+                await message.add_reaction(FAILED)
             except Exception:
                 pass
 
-            await message.add_reaction(FAILED)
+        finally:
+            if video_path:
+                shutil.rmtree(os.path.dirname(video_path), ignore_errors=True)
 
     async def download_video(self, url):
         download_dir = tempfile.mkdtemp(prefix="jesus_")
@@ -101,3 +107,47 @@ class Jesus(commands.Cog):
             )
 
         return video_path
+
+    async def upload_to_loops(self, video_path, source_url):
+        loops_url = os.getenv("LOOPS_URL", "").rstrip("/")
+        access_token = os.getenv("LOOPS_ACCESS_TOKEN", "").strip()
+
+        if not loops_url:
+            raise RuntimeError("LOOPS_URL is not configured")
+
+        if not access_token:
+            raise RuntimeError("LOOPS_ACCESS_TOKEN is not configured")
+
+        api_base = (
+            loops_url
+            if loops_url.endswith("/api/v1")
+            else f"{loops_url}/api/v1"
+        )
+        upload_url = f"{api_base}/studio/upload"
+        description = f"Archived from Discord: {source_url}"[:200]
+
+        form = aiohttp.FormData()
+
+        with open(video_path, "rb") as video_file:
+            form.add_field(
+                "video",
+                video_file,
+                filename=os.path.basename(video_path),
+                content_type="video/mp4",
+            )
+            form.add_field("description", description)
+
+            timeout = aiohttp.ClientTimeout(total=600)
+            headers = {"Authorization": f"Bearer {access_token}"}
+
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    upload_url,
+                    data=form,
+                    headers=headers,
+                ) as response:
+                    if not 200 <= response.status < 300:
+                        details = (await response.text())[:500]
+                        raise RuntimeError(
+                            f"Loops upload failed ({response.status}): {details}"
+                        )
