@@ -7,11 +7,6 @@ import tempfile
 import uuid
 
 import aiohttp
-try:
-    import imageio_ffmpeg
-except ImportError:
-    imageio_ffmpeg = None
-
 from redbot.core import commands
 
 
@@ -57,7 +52,7 @@ class Jesus(commands.Cog):
 
         try:
             video_path = await self.download_video(url)
-            video_path = await self.strip_metadata(video_path)
+            video_path = self.rename_video(video_path)
             share_url = await self.upload_to_loops(video_path)
 
             # Sending the canonical URL makes Discord render Loops' video embed.
@@ -129,72 +124,13 @@ class Jesus(commands.Cog):
 
         return video_path
 
-    async def strip_metadata(self, video_path):
-        ffmpeg_candidates = [
-            os.getenv("FFMPEG_PATH"),
-            shutil.which("ffmpeg"),
-            "/usr/bin/ffmpeg",
-            "/usr/local/bin/ffmpeg",
-            "/bin/ffmpeg",
-            "/data/venv/bin/ffmpeg",
-        ]
-
-        if imageio_ffmpeg:
-            try:
-                ffmpeg_candidates.append(imageio_ffmpeg.get_ffmpeg_exe())
-            except RuntimeError:
-                pass
-        ffmpeg = next(
-            (
-                candidate
-                for candidate in ffmpeg_candidates
-                if candidate
-                and os.path.isfile(candidate)
-                and os.access(candidate, os.X_OK)
-            ),
-            None,
-        )
-
-        if not ffmpeg:
-            raise RuntimeError(
-                "ffmpeg was not found; set FFMPEG_PATH to its executable path"
-            )
-
-        clean_path = os.path.join(
+    def rename_video(self, video_path):
+        random_path = os.path.join(
             os.path.dirname(video_path),
             f"{uuid.uuid4().hex}.mp4",
         )
-        process = await asyncio.create_subprocess_exec(
-            ffmpeg,
-            "-y",
-            "-i",
-            video_path,
-            "-map",
-            "0:v?",
-            "-map",
-            "0:a?",
-            "-map_metadata",
-            "-1",
-            "-map_chapters",
-            "-1",
-            "-c",
-            "copy",
-            clean_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-
-        if process.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg metadata cleanup failed: {stderr.decode().strip()}"
-            )
-
-        if not os.path.exists(clean_path):
-            raise RuntimeError("ffmpeg did not create the cleaned video")
-
-        os.remove(video_path)
-        return clean_path
+        os.replace(video_path, random_path)
+        return random_path
 
     async def upload_to_loops(self, video_path):
         loops_url = os.getenv("LOOPS_URL", "").rstrip("/")
