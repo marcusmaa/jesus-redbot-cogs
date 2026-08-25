@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+from importlib.util import find_spec
 import logging
 import os
 from pathlib import Path
@@ -113,7 +114,7 @@ class JesusDash(commands.Cog):
             try:
                 self.bot.unload_extension(extension)
                 importlib.invalidate_caches()
-                spec = importlib.util.find_spec(extension)
+                spec = find_spec(extension)
 
                 if spec is None:
                     raise RuntimeError("module specification was not found")
