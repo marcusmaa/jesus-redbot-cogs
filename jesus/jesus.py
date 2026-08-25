@@ -94,7 +94,7 @@ class Jesus(commands.Cog):
             yt_dlp,
             "--no-playlist",
             "--format",
-            "best[ext=mp4]/best",
+            "best[ext=mp4]",
             "--output",
             output,
             "--print",
@@ -125,9 +125,10 @@ class Jesus(commands.Cog):
         return video_path
 
     def rename_video(self, video_path):
+        extension = os.path.splitext(video_path)[1] or ".mp4"
         random_path = os.path.join(
             os.path.dirname(video_path),
-            f"{uuid.uuid4().hex}{os.path.splitext(video_path)[1] or ".mp4"}",
+            f"{uuid.uuid4().hex}{extension}",
         )
         os.replace(video_path, random_path)
         return random_path
@@ -157,8 +158,6 @@ class Jesus(commands.Cog):
             else f"{loops_url}/api/v1"
         )
         upload_url = f"{api_base}/studio/upload"
-        existing_post_ids = set()
-
         form = aiohttp.FormData()
 
         with open(video_path, "rb") as video_file:
