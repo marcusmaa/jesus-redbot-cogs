@@ -7,6 +7,11 @@ import tempfile
 import uuid
 
 import aiohttp
+try:
+    import imageio_ffmpeg
+except ImportError:
+    imageio_ffmpeg = None
+
 from redbot.core import commands
 
 
@@ -133,6 +138,12 @@ class Jesus(commands.Cog):
             "/bin/ffmpeg",
             "/data/venv/bin/ffmpeg",
         ]
+
+        if imageio_ffmpeg:
+            try:
+                ffmpeg_candidates.append(imageio_ffmpeg.get_ffmpeg_exe())
+            except RuntimeError:
+                pass
         ffmpeg = next(
             (
                 candidate
