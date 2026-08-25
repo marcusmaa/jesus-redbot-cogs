@@ -125,10 +125,29 @@ class Jesus(commands.Cog):
         return video_path
 
     async def strip_metadata(self, video_path):
-        ffmpeg = shutil.which("ffmpeg")
+        ffmpeg_candidates = [
+            os.getenv("FFMPEG_PATH"),
+            shutil.which("ffmpeg"),
+            "/usr/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/bin/ffmpeg",
+            "/data/venv/bin/ffmpeg",
+        ]
+        ffmpeg = next(
+            (
+                candidate
+                for candidate in ffmpeg_candidates
+                if candidate
+                and os.path.isfile(candidate)
+                and os.access(candidate, os.X_OK)
+            ),
+            None,
+        )
 
         if not ffmpeg:
-            raise RuntimeError("ffmpeg is not installed or is not on PATH")
+            raise RuntimeError(
+                "ffmpeg was not found; set FFMPEG_PATH to its executable path"
+            )
 
         clean_path = os.path.join(
             os.path.dirname(video_path),
