@@ -2,9 +2,7 @@ import asyncio
 import importlib
 import logging
 import os
-import sys
 from importlib.util import find_spec
-from pathlib import Path
 
 from discord.ext import tasks
 from redbot.core import Config, commands
@@ -59,7 +57,7 @@ class JesusDash(commands.Cog):
         return (
             "Cog Dashboard\n\n"
             f"{RELOAD} Reload all loaded cogs\n"
-            f"{UPDATE} Check all Git-backed cog checkouts for updates, then reload\n"
+            f"{UPDATE} Run CogManager's cog update, then reload all cogs\n"
             f"{REFRESH} Refresh this dashboard\n\n"
             f"Loaded user cogs: {cog_count}\n"
             f"Last action: {status}\n\n"
@@ -165,59 +163,30 @@ class JesusDash(commands.Cog):
 
         return reloaded, failed
 
-    def git_roots_for_cogs(self):
-        roots = set()
-
-        for extension in self.managed_extensions():
-            module = sys.modules.get(extension)
-            module_path = getattr(module, "__file__", None)
-
-            if not module_path:
-                continue
-
-            for parent in Path(module_path).resolve().parents:
-                if (parent / ".git").exists():
-                    roots.add(parent)
-                    break
-
-        return sorted(roots)
-
     async def update_all_cogs(self):
-        roots = self.git_roots_for_cogs()
+        command = self.bot.get_command("cog update")
 
-        if not roots:
+        if command is None:
             await self.set_status(
-                "No Git-backed cog checkouts found; use CogManager to update."
+                "CogManager's cog update command is not loaded."
             )
             return
 
-        updated = 0
-        failed = 0
+        channel = await self.get_dashboard_channel()
+        message = await channel.fetch_message(await self.config.message_id())
+        context = await self.bot.get_context(message)
 
-        for root in roots:
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                "-C",
-                str(root),
-                "pull",
-                "--ff-only",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await process.communicate()
+        try:
+            # The dashboard already verifies that the reaction came from an owner.
+            await context.invoke(command)
+        except Exception:
+            log.exception("CogManager update failed")
+            await self.set_status("CogManager update failed; check the Redbot log.")
+            return
 
-            if process.returncode:
-                failed += 1
-                details = (stderr or stdout).decode().strip()[:300]
-                log.error("Cog update failed in %s: %s", root, details)
-            else:
-                updated += 1
-
-        reloaded, reload_failed = await self.reload_all_cogs()
-        failed += reload_failed
+        reloaded, failed = await self.reload_all_cogs()
         await self.set_status(
-            f"Checked {len(roots)} checkout(s), updated {updated}; "
-            f"reloaded {reloaded} cog(s), {failed} failed."
+            f"CogManager updated cogs; reloaded {reloaded}, {failed} failed."
         )
 
     async def set_status(self, status):
