@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import logging
 import os
 from pathlib import Path
@@ -106,10 +107,26 @@ class JesusDash(commands.Cog):
             await self.set_status("No loaded Jesus extensions were found.")
             return
 
-        for extension in extensions:
-            await self.bot.reload_extension(extension)
+        reloaded = []
 
-        await self.set_status(status)
+        for extension in extensions:
+            try:
+                self.bot.unload_extension(extension)
+                importlib.invalidate_caches()
+                spec = importlib.util.find_spec(extension)
+
+                if spec is None:
+                    raise RuntimeError("module specification was not found")
+
+                await self.bot.load_extension(spec)
+                reloaded.append(extension)
+            except Exception:
+                log.exception("Failed to reload extension %s", extension)
+
+        if reloaded:
+            await self.set_status(status)
+        else:
+            await self.set_status("Jesus cog reload failed; check the Redbot log.")
 
     async def run_update(self):
         repo_root = self.find_repo_root()
