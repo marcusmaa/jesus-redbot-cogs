@@ -94,14 +94,17 @@ class Jesus(commands.Cog):
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
+            shutil.rmtree(download_dir, ignore_errors=True)
             raise RuntimeError(stderr.decode().strip())
 
         video_path = stdout.decode().strip()
 
         if not video_path:
+            shutil.rmtree(download_dir, ignore_errors=True)
             raise RuntimeError("yt-dlp returned no output path")
 
         if not os.path.exists(video_path):
+            shutil.rmtree(download_dir, ignore_errors=True)
             raise RuntimeError(
                 f"Downloaded file does not exist: {video_path}"
             )
