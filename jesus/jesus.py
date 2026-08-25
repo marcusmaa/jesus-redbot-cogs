@@ -6,7 +6,11 @@ import tempfile
 from redbot.core import commands
 
 
-CHANNEL_ID = 1541859651782451329
+CHANNEL_ID = 1541786916817739916
+
+HOURGLASS = "\N{HOURGLASS NOT DONE}"
+SUCCESS = "\N{WHITE HEAVY CHECK MARK}"
+FAILED = "\N{CROSS MARK}"
 
 SUPPORTED_URL = re.compile(
     r"https?://(?:www\.)?"
@@ -17,7 +21,7 @@ SUPPORTED_URL = re.compile(
 
 
 class Jesus(commands.Cog):
-    """Downloads short-form videos posted in the monitored channel."""
+    """Monitor short-form video links and download them."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -37,26 +41,33 @@ class Jesus(commands.Cog):
 
         url = match.group(0)
 
-        await message.add_reaction("⏳")
+        await message.add_reaction(HOURGLASS)
 
         try:
             video_path = await self.download_video(url)
 
             print(f"Downloaded: {video_path}")
 
-            await message.remove_reaction("?", self.bot.user)
-            await message.add_reaction("✅")
+            await message.remove_reaction(HOURGLASS, self.bot.user)
+            await message.add_reaction(SUCCESS)
 
         except Exception as e:
             print(f"Download failed: {e}")
 
-            await message.remove_reaction("?", self.bot.user)
-            await message.add_reaction("❌")
+            try:
+                await message.remove_reaction(HOURGLASS, self.bot.user)
+            except Exception:
+                pass
+
+            await message.add_reaction(FAILED)
 
     async def download_video(self, url):
         download_dir = tempfile.mkdtemp(prefix="jesus_")
 
-        output = os.path.join(download_dir, "%(id)s.%(ext)s")
+        output = os.path.join(
+            download_dir,
+            "%(id)s.%(ext)s"
+        )
 
         process = await asyncio.create_subprocess_exec(
             "/data/venv/bin/yt-dlp",
@@ -77,6 +88,16 @@ class Jesus(commands.Cog):
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-            raise RuntimeError(stderr.decode())
+            raise RuntimeError(stderr.decode().strip())
 
-        return stdout.decode().strip()
+        video_path = stdout.decode().strip()
+
+        if not video_path:
+            raise RuntimeError("yt-dlp returned no output path")
+
+        if not os.path.exists(video_path):
+            raise RuntimeError(
+                f"Downloaded file does not exist: {video_path}"
+            )
+
+        return video_path
