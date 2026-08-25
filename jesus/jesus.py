@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import re
 import shutil
@@ -13,6 +14,8 @@ CHANNEL_ID = 1541859651782451329
 HOURGLASS = "\u23F3"
 SUCCESS = "\u2705"
 FAILED = "\u274C"
+
+log = logging.getLogger("red.jesus")
 
 SUPPORTED_URL = re.compile(
     r"https?://(?:www\.)?"
@@ -55,10 +58,10 @@ class Jesus(commands.Cog):
 
             # Do not delete the source message until upload and share-link post succeed.
             await message.delete()
-            print(f"Uploaded to Loops and posted share link: {share_url}")
+            log.info("Uploaded to Loops and posted share link: %s", share_url)
 
         except Exception as e:
-            print(f"Video archive failed: {e}")
+            log.exception("Video archive failed for %s", url)
 
             try:
                 await message.remove_reaction(HOURGLASS, self.bot.user)
