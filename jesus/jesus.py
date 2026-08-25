@@ -48,11 +48,14 @@ class Jesus(commands.Cog):
 
         try:
             video_path = await self.download_video(url)
-            await self.upload_to_loops(video_path, url)
+            share_url = await self.upload_to_loops(video_path, url)
 
-            # Do not delete the source message until Loops confirms the upload.
+            # Sending the canonical URL makes Discord render Loops' video embed.
+            await message.channel.send(share_url)
+
+            # Do not delete the source message until upload and share-link post succeed.
             await message.delete()
-            print(f"Uploaded to Loops and deleted source message: {url}")
+            print(f"Uploaded to Loops and posted share link: {share_url}")
 
         except Exception as e:
             print(f"Video archive failed: {e}")
@@ -154,3 +157,22 @@ class Jesus(commands.Cog):
                         raise RuntimeError(
                             f"Loops upload failed ({response.status}): {details}"
                         )
+
+                    payload = await response.json(content_type=None)
+                    data = payload.get("data")
+
+                    if isinstance(data, list):
+                        video = data[0] if data else None
+                    else:
+                        video = data
+
+                    share_url = video.get("url") if isinstance(video, dict) else None
+
+                    if not isinstance(share_url, str) or not share_url.startswith(
+                        ("https://", "http://")
+                    ):
+                        raise RuntimeError(
+                            "Loops upload response did not include a share URL"
+                        )
+
+                    return share_url
