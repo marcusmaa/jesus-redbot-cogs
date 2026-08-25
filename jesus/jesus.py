@@ -10,10 +10,9 @@ import aiohttp
 from redbot.core import commands
 
 
-CHANNEL_ID = 1541859651782451329
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 
 HOURGLASS = "\u23F3"
-SUCCESS = "\u2705"
 FAILED = "\u274C"
 
 log = logging.getLogger("red.jesus")
@@ -53,7 +52,10 @@ class Jesus(commands.Cog):
         try:
             video_path = await self.download_video(url)
             video_path = self.rename_video(video_path)
-            share_url = await self.upload_to_loops(video_path)
+            share_url = await self.upload_to_loops(
+                video_path,
+                self.source_hashtag(url),
+            )
 
             # Sending the canonical URL makes Discord render Loops' video embed.
             await message.channel.send(share_url)
@@ -92,9 +94,7 @@ class Jesus(commands.Cog):
             yt_dlp,
             "--no-playlist",
             "--format",
-            "bv*+ba/b",
-            "--merge-output-format",
-            "mp4",
+            "best[ext=mp4]/best",
             "--output",
             output,
             "--print",
@@ -127,12 +127,21 @@ class Jesus(commands.Cog):
     def rename_video(self, video_path):
         random_path = os.path.join(
             os.path.dirname(video_path),
-            f"{uuid.uuid4().hex}.mp4",
+            f"{uuid.uuid4().hex}{os.path.splitext(video_path)[1] or ".mp4"}",
         )
         os.replace(video_path, random_path)
         return random_path
 
-    async def upload_to_loops(self, video_path):
+    def source_hashtag(self, url):
+        lowered_url = url.lower()
+
+        if "tiktok.com" in lowered_url:
+            return "#tiktok"
+        if "instagram.com" in lowered_url:
+            return "#reels"
+        return "#shorts"
+
+    async def upload_to_loops(self, video_path, description):
         loops_url = os.getenv("LOOPS_URL", "").rstrip("/")
         access_token = os.getenv("LOOPS_ACCESS_TOKEN", "").strip()
 
@@ -148,8 +157,7 @@ class Jesus(commands.Cog):
             else f"{loops_url}/api/v1"
         )
         upload_url = f"{api_base}/studio/upload"
-        # Used only to locate the asynchronous upload; cleared before sharing.
-        upload_marker = uuid.uuid4().hex
+        existing_post_ids = set()
 
         form = aiohttp.FormData()
 
@@ -160,12 +168,18 @@ class Jesus(commands.Cog):
                 filename=os.path.basename(video_path),
                 content_type="video/mp4",
             )
-            form.add_field("description", upload_marker)
+            form.add_field("description", description)
 
             timeout = aiohttp.ClientTimeout(total=600)
             headers = {"Authorization": f"Bearer {access_token}"}
 
             async with aiohttp.ClientSession(timeout=timeout) as session:
+                existing_post_ids = await self.get_loops_post_ids(
+                    session,
+                    api_base,
+                    headers,
+                )
+
                 async with session.post(
                     upload_url,
                     data=form,
@@ -183,22 +197,39 @@ class Jesus(commands.Cog):
                     session,
                     api_base,
                     headers,
-                    upload_marker,
-                )
-                await self.clear_loops_caption(
-                    session,
-                    api_base,
-                    headers,
-                    video["id"],
+                    existing_post_ids,
+                    description,
                 )
                 return video["url"]
+
+    async def get_loops_post_ids(self, session, api_base, headers):
+        posts_url = (
+            f"{api_base}/studio/posts"
+            "?limit=20&sort_field=created_at&sort_direction=desc"
+        )
+
+        async with session.get(posts_url, headers=headers) as response:
+            if not 200 <= response.status < 300:
+                details = (await response.text())[:500]
+                raise RuntimeError(
+                    f"Loops post lookup failed ({response.status}): {details}"
+                )
+
+            payload = await response.json(content_type=None)
+
+        return {
+            str(video["id"])
+            for video in payload.get("data", [])
+            if isinstance(video, dict) and video.get("id") is not None
+        }
 
     async def wait_for_loops_share_url(
         self,
         session,
         api_base,
         headers,
-        upload_marker,
+        existing_post_ids,
+        description,
     ):
         posts_url = (
             f"{api_base}/studio/posts"
@@ -221,7 +252,10 @@ class Jesus(commands.Cog):
                 if not isinstance(video, dict):
                     continue
 
-                if upload_marker not in (video.get("caption") or ""):
+                if (
+                    str(video.get("id")) in existing_post_ids
+                    or video.get("caption") != description
+                ):
                     continue
 
                 share_url = video.get("url")
@@ -239,16 +273,3 @@ class Jesus(commands.Cog):
             "Loops did not publish the uploaded video within five minutes"
         )
 
-    async def clear_loops_caption(self, session, api_base, headers, video_id):
-        edit_url = f"{api_base}/video/edit/{video_id}"
-
-        async with session.post(
-            edit_url,
-            json={"caption": ""},
-            headers=headers,
-        ) as response:
-            if not 200 <= response.status < 300:
-                details = (await response.text())[:500]
-                raise RuntimeError(
-                    f"Loops caption cleanup failed ({response.status}): {details}"
-                )
