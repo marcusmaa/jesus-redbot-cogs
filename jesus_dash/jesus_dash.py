@@ -1,10 +1,12 @@
 import asyncio
 import importlib
-from importlib.util import find_spec
 import logging
 import os
+import sys
+from importlib.util import find_spec
 from pathlib import Path
 
+from discord.ext import tasks
 from redbot.core import Config, commands
 
 
@@ -16,17 +18,9 @@ REFRESH = "\u2139\uFE0F"
 
 log = logging.getLogger("red.jesus_dash")
 
-DASHBOARD_TEXT = f"""Jesus Dashboard
-
-{RELOAD} Reload Jesus and Jesus Dash
-{UPDATE} Pull the latest cog code, then reload
-{REFRESH} Refresh this dashboard
-
-Only Redbot owners can use these controls."""
-
 
 class JesusDash(commands.Cog):
-    """Reaction-based controls for the Jesus cogs."""
+    """Reaction-based dashboard for all installed cogs."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -35,26 +29,62 @@ class JesusDash(commands.Cog):
             identifier=784361923,
             force_registration=True,
         )
-        self.config.register_global(message_id=None)
+        self.config.register_global(
+            message_id=None,
+            last_status="Ready.",
+        )
         self._startup_task = None
 
     async def cog_load(self):
         self._startup_task = asyncio.create_task(self.ensure_dashboard())
+        self.prompt_refresh_loop.start()
 
     def cog_unload(self):
         if self._startup_task:
             self._startup_task.cancel()
 
+        self.prompt_refresh_loop.cancel()
+
+    def managed_extensions(self):
+        return sorted(
+            name
+            for name in self.bot.extensions
+            if not name.startswith("redbot.")
+        )
+
+    async def dashboard_text(self):
+        status = await self.config.last_status()
+        cog_count = len(self.managed_extensions())
+
+        return (
+            "Cog Dashboard\n\n"
+            f"{RELOAD} Reload all loaded cogs\n"
+            f"{UPDATE} Check all Git-backed cog checkouts for updates, then reload\n"
+            f"{REFRESH} Refresh this dashboard\n\n"
+            f"Loaded user cogs: {cog_count}\n"
+            f"Last action: {status}\n\n"
+            "Only Redbot owners can use these controls."
+        )
+
+    async def get_dashboard_channel(self):
+        if not DASH_CHID:
+            return None
+
+        channel = self.bot.get_channel(DASH_CHID)
+
+        if channel is None:
+            channel = await self.bot.fetch_channel(DASH_CHID)
+
+        return channel
+
     async def ensure_dashboard(self):
         await self.bot.wait_until_ready()
 
-        if not DASH_CHID:
+        channel = await self.get_dashboard_channel()
+
+        if channel is None:
             log.warning("DASH_CHID is not configured; dashboard is disabled")
             return
-
-        channel = self.bot.get_channel(DASH_CHID)
-        if channel is None:
-            channel = await self.bot.fetch_channel(DASH_CHID)
 
         message = None
         message_id = await self.config.message_id()
@@ -65,18 +95,28 @@ class JesusDash(commands.Cog):
             except Exception:
                 pass
 
+        content = await self.dashboard_text()
+
         if message is None:
-            message = await channel.send(DASHBOARD_TEXT)
+            message = await channel.send(content)
             await self.config.message_id.set(message.id)
         else:
-            await message.edit(content=DASHBOARD_TEXT)
+            await message.edit(content=content)
 
         for emoji in (RELOAD, UPDATE, REFRESH):
             await message.add_reaction(emoji)
 
+    @tasks.loop(minutes=1)
+    async def prompt_refresh_loop(self):
+        await self.ensure_dashboard()
+
+    @prompt_refresh_loop.before_loop
+    async def before_prompt_refresh_loop(self):
+        await self.bot.wait_until_ready()
+
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):
-        if payload.user_id == self.bot.user.id:
+        if self.bot.user and payload.user_id == self.bot.user.id:
             return
 
         if payload.channel_id != DASH_CHID:
@@ -91,24 +131,22 @@ class JesusDash(commands.Cog):
         emoji = str(payload.emoji)
 
         if emoji == RELOAD:
-            await self.run_reload("Reloaded Jesus cogs.")
+            reloaded, failed = await self.reload_all_cogs()
+            await self.set_status(
+                f"Reloaded {reloaded} cog(s); {failed} failed."
+            )
         elif emoji == UPDATE:
-            await self.run_update()
+            await self.update_all_cogs()
         elif emoji == REFRESH:
-            await self.ensure_dashboard()
+            await self.set_status("Dashboard refreshed.")
 
-    async def run_reload(self, status):
-        extensions = [
-            name
-            for name in self.bot.extensions
-            if name.rsplit(".", 1)[-1] in {"jesus", "jesus_dash"}
-        ]
+    async def reload_all_cogs(self):
+        extensions = self.managed_extensions()
+        reloaded = 0
+        failed = 0
 
-        if not extensions:
-            await self.set_status("No loaded Jesus extensions were found.")
-            return
-
-        reloaded = []
+        # Reload this dashboard last so it remains available to report results.
+        extensions.sort(key=lambda name: name.rsplit(".", 1)[-1] == "jesus_dash")
 
         for extension in extensions:
             try:
@@ -120,62 +158,68 @@ class JesusDash(commands.Cog):
                     raise RuntimeError("module specification was not found")
 
                 await self.bot.load_extension(spec)
-                reloaded.append(extension)
+                reloaded += 1
             except Exception:
+                failed += 1
                 log.exception("Failed to reload extension %s", extension)
 
-        if reloaded:
-            await self.set_status(status)
-        else:
-            await self.set_status("Jesus cog reload failed; check the Redbot log.")
+        return reloaded, failed
 
-    async def run_update(self):
-        repo_root = self.find_repo_root()
+    def git_roots_for_cogs(self):
+        roots = set()
 
-        if repo_root is None:
+        for extension in self.managed_extensions():
+            module = sys.modules.get(extension)
+            module_path = getattr(module, "__file__", None)
+
+            if not module_path:
+                continue
+
+            for parent in Path(module_path).resolve().parents:
+                if (parent / ".git").exists():
+                    roots.add(parent)
+                    break
+
+        return sorted(roots)
+
+    async def update_all_cogs(self):
+        roots = self.git_roots_for_cogs()
+
+        if not roots:
             await self.set_status(
-                "No Git checkout was found. Update the cogs through CogManager."
+                "No Git-backed cog checkouts found; use CogManager to update."
             )
             return
 
-        process = await asyncio.create_subprocess_exec(
-            "git",
-            "-C",
-            str(repo_root),
-            "pull",
-            "--ff-only",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        updated = 0
+        failed = 0
+
+        for root in roots:
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                str(root),
+                "pull",
+                "--ff-only",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode:
+                failed += 1
+                details = (stderr or stdout).decode().strip()[:300]
+                log.error("Cog update failed in %s: %s", root, details)
+            else:
+                updated += 1
+
+        reloaded, reload_failed = await self.reload_all_cogs()
+        failed += reload_failed
+        await self.set_status(
+            f"Checked {len(roots)} checkout(s), updated {updated}; "
+            f"reloaded {reloaded} cog(s), {failed} failed."
         )
-        stdout, stderr = await process.communicate()
-
-        if process.returncode:
-            details = (stderr or stdout).decode().strip()[:300]
-            await self.set_status(f"Update failed: {details or 'git pull failed'}")
-            return
-
-        await self.run_reload("Updated from Git and reloaded Jesus cogs.")
-
-    def find_repo_root(self):
-        for path in Path(__file__).resolve().parents:
-            if (path / ".git").exists():
-                return path
-        return None
 
     async def set_status(self, status):
-        if not DASH_CHID:
-            return
-
-        channel = self.bot.get_channel(DASH_CHID)
-        if channel is None:
-            channel = await self.bot.fetch_channel(DASH_CHID)
-
-        message_id = await self.config.message_id()
-
-        try:
-            message = await channel.fetch_message(message_id)
-        except Exception:
-            await self.ensure_dashboard()
-            return
-
-        await message.edit(content=f"{DASHBOARD_TEXT}\n\nLast action: {status}")
+        await self.config.last_status.set(status)
+        await self.ensure_dashboard()
