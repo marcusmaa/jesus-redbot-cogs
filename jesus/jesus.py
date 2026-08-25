@@ -6,7 +6,7 @@ import tempfile
 from redbot.core import commands
 
 
-CHANNEL_ID = 1541786916817739916
+CHANNEL_ID = 1541859651782451329
 
 HOURGLASS = "\u23F3"
 SUCCESS = "\u2705"
