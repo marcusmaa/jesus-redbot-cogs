@@ -10,7 +10,8 @@ import aiohttp
 from redbot.core import commands
 
 
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
+MONITOR_CHID = int(os.getenv("MONITOR_CHID", "0"))
+UPLOAD_CHID = int(os.getenv("UPLOAD_CHID", "0"))
 
 HOURGLASS = "\u23F3"
 FAILED = "\u274C"
@@ -36,7 +37,7 @@ class Jesus(commands.Cog):
         if message.author.bot:
             return
 
-        if message.channel.id != CHANNEL_ID:
+        if message.channel.id != MONITOR_CHID:
             return
 
         match = SUPPORTED_URL.search(message.content)
@@ -57,8 +58,12 @@ class Jesus(commands.Cog):
                 self.source_hashtag(url),
             )
 
+            upload_channel = self.bot.get_channel(UPLOAD_CHID)
+            if upload_channel is None:
+                upload_channel = await self.bot.fetch_channel(UPLOAD_CHID)
+
             # Sending the canonical URL makes Discord render Loops' video embed.
-            await message.channel.send(share_url)
+            await upload_channel.send(share_url)
 
             # Do not delete the source message until upload and share-link post succeed.
             await message.delete()
