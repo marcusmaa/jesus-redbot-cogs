@@ -34,44 +34,32 @@ class Jesus(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot:
-            return
-
-        if message.channel.id != MONITOR_CHID:
+        if message.author.bot or message.channel.id != MONITOR_CHID:
             return
 
         match = SUPPORTED_URL.search(message.content)
-
         if not match:
             return
 
         url = match.group(0)
         video_path = None
-
         await message.add_reaction(HOURGLASS)
 
         try:
             video_path = await self.download_video(url)
             video_path = self.rename_video(video_path)
-            share_url = await self.upload_to_loops(
-                video_path,
-                self.source_hashtag(url),
-            )
+            share_url = await self.upload_to_loops(video_path, self.source_hashtag(url))
 
             upload_channel = self.bot.get_channel(UPLOAD_CHID)
             if upload_channel is None:
                 upload_channel = await self.bot.fetch_channel(UPLOAD_CHID)
 
-            # Sending the canonical URL makes Discord render Loops' video embed.
             await upload_channel.send(share_url)
-
-            # Do not delete the source message until upload and share-link post succeed.
             await message.delete()
             log.info("Uploaded to Loops and posted share link: %s", share_url)
 
-        except Exception as e:
+        except Exception:
             log.exception("Video archive failed for %s", url)
-
             try:
                 await message.remove_reaction(HOURGLASS, self.bot.user)
                 await message.add_reaction(FAILED)
@@ -84,63 +72,40 @@ class Jesus(commands.Cog):
 
     async def download_video(self, url):
         yt_dlp = shutil.which("yt-dlp")
-
         if not yt_dlp:
             raise RuntimeError("yt-dlp is not installed or is not on PATH")
 
         download_dir = tempfile.mkdtemp(prefix="jesus_")
-
-        output = os.path.join(
-            download_dir,
-            "%(id)s.%(ext)s"
-        )
-
+        output = os.path.join(download_dir, "%(id)s.%(ext)s")
         process = await asyncio.create_subprocess_exec(
-            yt_dlp,
-            "--no-playlist",
-            "--format",
-            "best[ext=mp4]",
-            "--output",
-            output,
-            "--print",
-            "after_move:filepath",
-            url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            yt_dlp, "--no-playlist", "--format", "best[ext=mp4]/best",
+            "--output", output, "--print", "after_move:filepath", url,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-
         stdout, stderr = await process.communicate()
-
         if process.returncode != 0:
             shutil.rmtree(download_dir, ignore_errors=True)
             raise RuntimeError(stderr.decode().strip())
 
         video_path = stdout.decode().strip()
-
         if not video_path:
             shutil.rmtree(download_dir, ignore_errors=True)
             raise RuntimeError("yt-dlp returned no output path")
-
         if not os.path.exists(video_path):
             shutil.rmtree(download_dir, ignore_errors=True)
-            raise RuntimeError(
-                f"Downloaded file does not exist: {video_path}"
-            )
-
+            raise RuntimeError(f"Downloaded file does not exist: {video_path}")
         return video_path
 
     def rename_video(self, video_path):
         extension = os.path.splitext(video_path)[1] or ".mp4"
         random_path = os.path.join(
-            os.path.dirname(video_path),
-            f"{uuid.uuid4().hex}{extension}",
+            os.path.dirname(video_path), f"{uuid.uuid4().hex}{extension}"
         )
         os.replace(video_path, random_path)
         return random_path
 
     def source_hashtag(self, url):
         lowered_url = url.lower()
-
         if "tiktok.com" in lowered_url:
             return "#tiktok"
         if "instagram.com" in lowered_url:
@@ -150,59 +115,36 @@ class Jesus(commands.Cog):
     async def upload_to_loops(self, video_path, description):
         loops_url = os.getenv("LOOPS_URL", "").rstrip("/")
         access_token = os.getenv("LOOPS_ACCESS_TOKEN", "").strip()
-
         if not loops_url:
             raise RuntimeError("LOOPS_URL is not configured")
-
         if not access_token:
             raise RuntimeError("LOOPS_ACCESS_TOKEN is not configured")
 
-        api_base = (
-            loops_url
-            if loops_url.endswith("/api/v1")
-            else f"{loops_url}/api/v1"
-        )
-        upload_url = f"{api_base}/studio/upload"
+        api_base = loops_url if loops_url.endswith("/api/v1") else f"{loops_url}/api/v1"
         form = aiohttp.FormData()
-
         with open(video_path, "rb") as video_file:
             form.add_field(
-                "video",
-                video_file,
-                filename=os.path.basename(video_path),
+                "video", video_file, filename=os.path.basename(video_path),
                 content_type="video/mp4",
             )
             form.add_field("description", description)
-
             timeout = aiohttp.ClientTimeout(total=600)
             headers = {"Authorization": f"Bearer {access_token}"}
 
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                existing_post_ids = await self.get_loops_post_ids(
-                    session,
-                    api_base,
-                    headers,
-                )
-
+                existing_post_ids = await self.get_loops_post_ids(session, api_base, headers)
                 async with session.post(
-                    upload_url,
-                    data=form,
-                    headers=headers,
+                    f"{api_base}/studio/upload", data=form, headers=headers
                 ) as response:
                     if not 200 <= response.status < 300:
                         details = (await response.text())[:500]
                         raise RuntimeError(
                             f"Loops upload failed ({response.status}): {details}"
                         )
-
                     await response.read()
 
                 video = await self.wait_for_loops_share_url(
-                    session,
-                    api_base,
-                    headers,
-                    existing_post_ids,
-                    description,
+                    session, api_base, headers, existing_post_ids, description
                 )
                 return video["url"]
 
@@ -211,37 +153,26 @@ class Jesus(commands.Cog):
             f"{api_base}/studio/posts"
             "?limit=20&sort_field=created_at&sort_direction=desc"
         )
-
         async with session.get(posts_url, headers=headers) as response:
             if not 200 <= response.status < 300:
                 details = (await response.text())[:500]
                 raise RuntimeError(
                     f"Loops post lookup failed ({response.status}): {details}"
                 )
-
             payload = await response.json(content_type=None)
 
         return {
-            str(video["id"])
-            for video in payload.get("data", [])
+            str(video["id"]) for video in payload.get("data", [])
             if isinstance(video, dict) and video.get("id") is not None
         }
 
     async def wait_for_loops_share_url(
-        self,
-        session,
-        api_base,
-        headers,
-        existing_post_ids,
-        description,
+        self, session, api_base, headers, existing_post_ids, description
     ):
         posts_url = (
             f"{api_base}/studio/posts"
             "?limit=20&sort_field=created_at&sort_direction=desc"
         )
-
-        # Loops processes uploads asynchronously, so wait for this exact post to
-        # become published and expose its canonical share URL.
         for _ in range(60):
             async with session.get(posts_url, headers=headers) as response:
                 if not 200 <= response.status < 300:
@@ -249,13 +180,11 @@ class Jesus(commands.Cog):
                     raise RuntimeError(
                         f"Loops post lookup failed ({response.status}): {details}"
                     )
-
                 payload = await response.json(content_type=None)
 
             for video in payload.get("data", []):
                 if not isinstance(video, dict):
                     continue
-
                 if (
                     str(video.get("id")) in existing_post_ids
                     or video.get("caption") != description
@@ -263,7 +192,6 @@ class Jesus(commands.Cog):
                     continue
 
                 share_url = video.get("url")
-
                 if (
                     video.get("status") == "published"
                     and isinstance(share_url, str)
@@ -276,4 +204,3 @@ class Jesus(commands.Cog):
         raise RuntimeError(
             "Loops did not publish the uploaded video within five minutes"
         )
-
